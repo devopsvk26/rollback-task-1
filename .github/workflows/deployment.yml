@@ -18,7 +18,7 @@ jobs:
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          printf "%s" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
 
@@ -36,9 +36,11 @@ jobs:
             echo "v2 Deployment Failed! Initiating Rollback..."
             ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
             "./rollback.sh"
+            curl -X POST -H 'Content-type: application/json' --data '{"text":"v2 Deployment Failed. Rolled back to v1."}' ${{ secrets.WEBHOOK_URL }}
             exit 1
           fi
           echo "v2 Deployment Successful!"
+          curl -X POST -H 'Content-type: application/json' --data '{"text":"v2 Deployment Successful!"}' ${{ secrets.WEBHOOK_URL }}
 
       # Step 5: Remove v1 (if v2 is successful)
       - name: Remove v1 Container

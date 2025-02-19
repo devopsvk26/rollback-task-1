@@ -1,28 +1,37 @@
 #!/bin/bash
 
-set -ex  # 'e' stops on error, 'x' prints each command before execution
+set -e  # Exit if any command fails
 
-echo "🔄 Pulling the latest v2 image..."
-docker pull $DOCKER_USERNAME/my-app:v2 || { echo "❌ Failed to pull v2 image"; exit 1; }
+echo "🔄 Checking v2 container status..."
 
-echo "🚀 Running new container (v2)..."
-docker run -d --name my-app-v2 -p 5001:5000 $DOCKER_USERNAME/my-app:v2 || { echo "❌ Failed to start v2 container"; exit 1; }
+# Stop and remove v2 if it exists
+if docker ps -a | grep -q myapp-v2; then
+    echo "⚠️ v2 container found. Stopping and removing it..."
+    docker stop myapp-v2 && docker rm myapp-v2
+else
+    echo "✅ No v2 container found. Skipping removal."
+fi
 
-echo "🔄 Updating Nginx config to point to v2..."
-sed -i 's/my-app-v1/my-app-v2/' /etc/nginx/nginx.conf || { echo "❌ Failed to update Nginx config"; exit 1; }
+# Check if v1 is running
+if docker ps | grep -q myapp-v1; then
+    echo "✅ v1 is already running!"
+else
+    echo "🚀 v1 is not running. Starting it now..."
+    docker run -d --name myapp-v1 -p 5000:80 myapp:v1 || { echo "❌ Failed to start v1"; exit 1; }
+fi
+
+# Revert Nginx to point back to v1
+echo "🔄 Rolling back Nginx configuration..."
+sed -i 's/myapp-v2/myapp-v1/' /etc/nginx/nginx.conf || { echo "❌ Failed to revert Nginx config"; exit 1; }
 systemctl reload nginx || { echo "❌ Failed to reload Nginx"; exit 1; }
 
-echo "🩺 Waiting for v2 health check..."
-sleep 10
-if curl -f http://localhost:5001/health; then
-    echo "✅ v2 is healthy. Removing v1..."
-    docker stop my-app-v1 && docker rm my-app-v1 || { echo "❌ Failed to remove v1"; exit 1; }
-    echo "🎉 Deployment successful!"
+# Send Slack notification
+if [ -n "$SLACK_WEBHOOK_URL" ]; then
+    echo "📢 Sending rollback alert to Slack..."
+    curl -X POST -H 'Content-type: application/json' --data '{"text":"🚨 Deployment failed! Rolled back to v1."}' "$SLACK_WEBHOOK_URL"
 else
-    echo "🚨 Deployment failed. Rolling back to v1..."
-    docker stop my-app-v2 && docker rm my-app-v2 || { echo "❌ Failed to remove v2"; exit 1; }
-    sed -i 's/my-app-v2/my-app-v1/' /etc/nginx/nginx.conf || { echo "❌ Failed to revert Nginx config"; exit 1; }
-    systemctl reload nginx || { echo "❌ Failed to reload Nginx after rollback"; exit 1; }
-    curl -X POST -H 'Content-type: application/json' --data '{"text":"🚨 Deployment failed! Rolling back to v1."}' $SLACK_WEBHOOK_URL
-    exit 1
+    echo "⚠️ SLACK_WEBHOOK_URL not set. Skipping Slack alert."
 fi
+
+echo "✅ Rollback completed successfully!"
+exit 0

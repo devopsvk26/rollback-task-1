@@ -13,21 +13,29 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Debug - List Files
+        run: ls -lah
+
       - name: Log in to Docker Hub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
       - name: Build Docker Image
         run: |
-          docker build -t myapp:v2 .
+          docker build -t myapp:v2 -f Dockerfile .
 
       - name: Push Docker Image
         run: |
           docker tag myapp:v2 my-docker-repo/myapp:v2
           docker push my-docker-repo/myapp:v2
 
+      - name: Setup SSH Key
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
       - name: Deploy Application
         run: |
-          ssh user@your-server << 'EOF'
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no user@your-server-ip << 'EOF'
             set -e
             docker pull my-docker-repo/myapp:v2
             docker run -d --name myapp-v2 -p 5001:5000 my-docker-repo/myapp:v2 || exit 1
@@ -44,7 +52,7 @@ jobs:
       - name: Rollback on Failure
         if: failure()
         run: |
-          ssh user@your-server << 'EOF'
+          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no user@your-server-ip << 'EOF'
             docker stop myapp-v2 || true
             docker rm myapp-v2 || true
             sed -i 's/5001/5000/g' /etc/nginx/sites-available/default

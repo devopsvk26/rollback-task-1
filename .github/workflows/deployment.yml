@@ -1,4 +1,4 @@
-name: Deploy Docker Containers
+name: Deploy MyApp
 
 on:
   push:
@@ -6,60 +6,55 @@ on:
       - main
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Checkout repository
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      # Step 2: Log in to Docker Hub
       - name: Log in to Docker Hub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      # Step 3: Build & Tag Docker Image
-      - name: Build & Tag Docker Image
+      - name: Build Docker Image
         run: |
           docker build -t myapp:v2 .
-          docker tag myapp:v2 ${{ secrets.DOCKER_USERNAME }}/myapp:v2
 
-      # Step 4: Push Image to Docker Hub
       - name: Push Docker Image
-        run: docker push ${{ secrets.DOCKER_USERNAME }}/myapp:v2
-
-      # Step 5: Set up SSH
-      - name: Set up SSH
         run: |
-          mkdir -p ~/.ssh
-          printf "%s\n" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
-          eval "$(ssh-agent -s)"
-          ssh-add ~/.ssh/id_rsa
+          docker tag myapp:v2 my-docker-repo/myapp:v2
+          docker push my-docker-repo/myapp:v2
 
-      # Step 6: Deploy v2
-      - name: Deploy v2
+      - name: Deploy Application
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
-          "docker stop myapp-v2 || true && docker rm myapp-v2 || true && docker pull ${{ secrets.DOCKER_USERNAME }}/myapp:v2 && docker run -d --name myapp-v2 -p 5001:80 ${{ secrets.DOCKER_USERNAME }}/myapp:v2"
+          ssh user@your-server << 'EOF'
+            set -e
+            docker pull my-docker-repo/myapp:v2
+            docker run -d --name myapp-v2 -p 5001:5000 my-docker-repo/myapp:v2 || exit 1
+            sed -i 's/5000/5001/g' /etc/nginx/sites-available/default
+            nginx -s reload
+            sleep 10
+            curl -f http://localhost:5001 || (docker stop myapp-v2 && docker rm myapp-v2 && exit 1)
+            docker stop myapp-v1
+            docker rm myapp-v1
+            docker rename myapp-v2 myapp-v1
+          EOF
+        continue-on-error: true
 
-      # Step 7: Test v2 Deployment
-      - name: Test v2 Deployment
+      - name: Rollback on Failure
+        if: failure()
         run: |
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.SSH_HOST }}:5001)
-          if [ "$RESPONSE" -ne 200 ]; then
-            echo "❌ v2 Deployment Failed! Initiating Rollback..."
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} "./rollback.sh"
-            curl -X POST -H 'Content-type: application/json' --data '{"text":"❌ v2 Deployment Failed. Rolled back to v1."}' ${{ secrets.WEBHOOK_URL }}
-            exit 1
-          fi
-          echo "✅ v2 Deployment Successful!"
-          curl -X POST -H 'Content-type: application/json' --data '{"text":"✅ v2 Deployment Successful!"}' ${{ secrets.WEBHOOK_URL }}
+          ssh user@your-server << 'EOF'
+            docker stop myapp-v2 || true
+            docker rm myapp-v2 || true
+            sed -i 's/5001/5000/g' /etc/nginx/sites-available/default
+            nginx -s reload
+          EOF
 
-      # Step 8: Remove v1 Container (Only if v2 Deployment is Successful)
-      - name: Remove v1 Container
-        if: success()
-        run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
-          "docker stop myapp-v1 && docker rm myapp-v1"
+      - name: Notify Slack on Failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_MESSAGE: "Deployment failed! Keeping the previous version running."
+          SLACK_COLOR: "danger"

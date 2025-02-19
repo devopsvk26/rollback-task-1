@@ -18,33 +18,40 @@ jobs:
       - name: Set up SSH
         run: |
           mkdir -p ~/.ssh
-          printf "%s" "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+          eval "$(ssh-agent -s)"
+          ssh-add ~/.ssh/id_rsa
 
       # Step 3: Deploy v2
       - name: Deploy v2
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
-          "docker run -d --name myapp-v2 -p 5001:80 myapp:v2 || exit 1"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} << 'EOF'
+            docker stop myapp-v2 || true
+            docker rm myapp-v2 || true
+            docker run -d --name myapp-v2 -p 5001:80 myapp:v2
+          EOF
 
       # Step 4: Test v2 Deployment
       - name: Test v2 Deployment
         run: |
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.SSH_HOST }}:5001)
           if [ "$RESPONSE" -ne 200 ]; then
-            echo "v2 Deployment Failed! Initiating Rollback..."
-            ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
-            "./rollback.sh"
-            curl -X POST -H 'Content-type: application/json' --data '{"text":"v2 Deployment Failed. Rolled back to v1."}' ${{ secrets.WEBHOOK_URL }}
+            echo "❌ v2 Deployment Failed! Initiating Rollback..."
+            ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} << 'EOF'
+              ./rollback.sh
+            EOF
+            curl -X POST -H 'Content-type: application/json' --data '{"text":"❌ v2 Deployment Failed. Rolled back to v1."}' ${{ secrets.WEBHOOK_URL }}
             exit 1
           fi
-          echo "v2 Deployment Successful!"
-          curl -X POST -H 'Content-type: application/json' --data '{"text":"v2 Deployment Successful!"}' ${{ secrets.WEBHOOK_URL }}
+          echo "✅ v2 Deployment Successful!"
+          curl -X POST -H 'Content-type: application/json' --data '{"text":"✅ v2 Deployment Successful!"}' ${{ secrets.WEBHOOK_URL }}
 
       # Step 5: Remove v1 (if v2 is successful)
       - name: Remove v1 Container
         if: success()
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} \
-          "docker stop myapp-v1 && docker rm myapp-v1"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} << 'EOF'
+            docker stop myapp-v1 && docker rm myapp-v1
+          EOF

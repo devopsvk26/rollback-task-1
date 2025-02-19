@@ -1,73 +1,53 @@
-name: Publish and Deploy MyApp
+name: Deploy MyApp
 
 on:
-  release:
-    types: -main
+  push:
+    branches:
+      - main
 
 jobs:
-  push_to_registry:
-    name: Push Docker image to Docker Hub
+  deploy:
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-      attestations: write
-      id-token: write
+
     steps:
-      - name: Check out the repo
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: my-docker-hub-namespace/myapp
-
-      - name: Build and push Docker image
-        id: push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile-v2
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: index.docker.io/my-docker-hub-namespace/myapp
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-
-  deploy:
-    name: Deploy Application
-    runs-on: ubuntu-latest
-    needs: push_to_registry
-    steps:
-      - name: Setup SSH Key
+      - name: Build Docker Image
         run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          docker build -t myapp:v2 .
+
+      - name: Tag and Push Docker Image
+        run: |
+          docker tag myapp:v2 my-docker-repo/myapp:v2
+          docker push my-docker-repo/myapp:v2
 
       - name: Deploy Application
         run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no user@your-server-ip << 'EOF'
+          ssh user@your-server << 'EOF'
             set -e
-            docker pull my-docker-hub-namespace/myapp:${{ steps.meta.outputs.tags }}
-            docker run -d --name myapp-v2 -p 5001:5000 my-docker-hub-namespace/myapp:${{ steps.meta.outputs.tags }} || exit 1
+            # Pull the latest version of the Docker image
+            docker pull my-docker-repo/myapp:v2
+
+            # Run the new Docker container (if it fails, rollback)
+            docker run -d --name myapp-v2 -p 5001:5000 my-docker-repo/myapp:v2 || exit 1
+
+            # Update Nginx configuration to reflect the new port
             sed -i 's/5000/5001/g' /etc/nginx/sites-available/default
             nginx -s reload
+
+            # Check if the application is up, if not, rollback
             sleep 10
             curl -f http://localhost:5001 || (docker stop myapp-v2 && docker rm myapp-v2 && exit 1)
-            docker stop myapp-v1
-            docker rm myapp-v1
+
+            # Stop and remove the old container
+            docker stop myapp-v1 || true
+            docker rm myapp-v1 || true
+
+            # Rename new container to the old container's name
             docker rename myapp-v2 myapp-v1
           EOF
         continue-on-error: true
@@ -75,9 +55,12 @@ jobs:
       - name: Rollback on Failure
         if: failure()
         run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no user@your-server-ip << 'EOF'
+          ssh user@your-server << 'EOF'
+            # If the deployment failed, stop and remove the new container
             docker stop myapp-v2 || true
             docker rm myapp-v2 || true
+
+            # Revert Nginx configuration to the previous port
             sed -i 's/5001/5000/g' /etc/nginx/sites-available/default
             nginx -s reload
           EOF

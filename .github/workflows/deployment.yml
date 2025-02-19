@@ -19,22 +19,30 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    - name: Build Docker Image (v2)
+    - name: Debug Docker Login
       run: |
-        docker build -t my-app:v2 -f Dockerfile-v2 .
-        docker tag my-app:v2 my-dockerhub-repo/my-app:v2
+        docker login -u "${{ secrets.DOCKER_USERNAME }}" -p "${{ secrets.DOCKER_PASSWORD }}"
+        docker info
+
+    - name: Build and Tag Docker Image (v2)
+      run: |
+        docker build -t ${{ secrets.DOCKER_USERNAME }}/my-app:v2 -f Dockerfile .
+        docker tag ${{ secrets.DOCKER_USERNAME }}/my-app:v2 docker.io/${{ secrets.DOCKER_USERNAME }}/my-app:v2
 
     - name: Push Docker Image to Registry
-      run: docker push my-dockerhub-repo/my-app:v2
+      run: docker push docker.io/${{ secrets.DOCKER_USERNAME }}/my-app:v2
+
+    - name: Copy Rollback Script to Server
+      run: |
+        scp -o StrictHostKeyChecking=no rollback.sh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }}:/tmp/
 
     - name: Deploy New Container
       run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash -s' < deploy_and_rollback.sh
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_IP }} 'bash /tmp/rollback.sh'
 
     - name: Alert on Deployment Failure
       if: failure()
-      uses: slackapi/slack-github-action@v1.23.0
-      with:
-        channel-id: ${{ secrets.SLACK_CHANNEL_ID }}
-        slack-token: ${{ secrets.SLACK_TOKEN }}
-        text: "🚨 Deployment of v2 failed. Rolled back to v1 successfully."
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+        --data '{"text":"🚨 Deployment of v2 failed! Rolled back to v1."}' \
+        ${{ secrets.SLACK_WEBHOOK_URL }}

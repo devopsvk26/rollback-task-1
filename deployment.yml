@@ -1,0 +1,55 @@
+name: Deploy Docker Containers
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Step 2: Set up Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      # Step 3: Build Docker images
+      - name: Build Docker v1 Image
+        run: docker build -t myapp:v1 -f Dockerfile-v1 .
+
+      - name: Build Docker v2 Image
+        run: docker build -t myapp:v2 -f Dockerfile-v2 .
+
+      # Step 4: Deploy v2
+      - name: Deploy v2
+        run: |
+          ssh -o StrictHostKeyChecking=no <your_user>@<your_server> << 'EOF'
+          docker run -d --name myapp-v2 -p 5001:80 myapp:v2 || exit 1
+          EOF
+
+      # Step 5: Test the v2 deployment
+      - name: Test v2 Deployment
+        run: |
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://<your_server_ip>:5001)
+          if [ "$RESPONSE" -ne 200 ]; then
+            echo "v2 Deployment Failed! Initiating Rollback..."
+            ssh -o StrictHostKeyChecking=no <your_user>@<your_server> << 'EOF'
+            ./rollback.sh
+            EOF
+            exit 1
+          fi
+          echo "v2 Deployment Successful!"
+
+      # Step 6: Remove v1 (if v2 is successful)
+      - name: Remove v1 Container
+        if: success()
+        run: |
+          ssh -o StrictHostKeyChecking=no <your_user>@<your_server> << 'EOF'
+          docker stop myapp-v1
+          docker rm myapp-v1
+          EOF

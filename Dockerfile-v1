@@ -1,0 +1,8 @@
+# Base image
+FROM nginx:latest
+
+# Copy v1's index.html into the Nginx web server directory
+COPY ./v1/index.html /usr/share/nginx/html/index.html
+
+# Expose the default Nginx port
+EXPOSE 80
